@@ -1,0 +1,102 @@
+﻿using BlogApp.Data;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Rendering;
+using BlogApp.Models.ViewModels;
+namespace BlogApp.Controllers
+{
+    public class PostController : Controller
+    {
+        private readonly string[] allowedExt = { ".jpg", ".jpeg", ".png", ".gif" };
+
+        private readonly AppDbContext context;
+
+        // Add this field
+        private readonly IWebHostEnvironment webHostEnvironment;
+
+        public PostController(AppDbContext context, IWebHostEnvironment webHostEnvironment)
+        {
+            this.context = context;
+            this.webHostEnvironment = webHostEnvironment;
+        }
+
+        [HttpGet]
+        public IActionResult Create()
+        {
+            var model = new PostViewModel();
+
+            model.Categories = context.Categories
+                .Select(c => new SelectListItem
+                {
+                    Value = c.Id.ToString(),
+                    Text = c.Name
+                }).ToList();
+            return View(model);
+        }
+
+        
+
+        [HttpPost]
+        public async Task<IActionResult> Create(PostViewModel postViewModel)
+        {
+            if (!ModelState.IsValid)
+            {
+                return View(postViewModel);
+            }
+
+            // Ensure Post object exists
+            postViewModel.Post ??= new Models.Post();
+
+            // Validate file presence
+            if (postViewModel.FeatureImage == null || postViewModel.FeatureImage.Length == 0)
+            {
+                ModelState.AddModelError("FeatureImage", "Please select an image to upload.");
+                return View(postViewModel);
+            }
+
+            var inputFileext = Path.GetExtension(postViewModel.FeatureImage.FileName).ToLower();
+            bool isAllowed = allowedExt.Contains(inputFileext);
+
+            if (!isAllowed)
+            {
+                ModelState.AddModelError("FeatureImage", "Invalid file type. Only JPG, JPEG, PNG, and GIF files are allowed.");
+                return View(postViewModel);
+            }
+
+            // Upload and save path
+            postViewModel.Post.FeatureImagePath = await UploadFileToFolder(postViewModel.FeatureImage);
+            await context.Posts.AddAsync(postViewModel.Post);
+            await context.SaveChangesAsync();
+            return RedirectToAction("Index");
+        }
+
+        public IActionResult Index()
+        {
+            return View();
+        }
+        private async Task<string> UploadFileToFolder(IFormFile file)
+        {
+            var inputFileExt = Path.GetExtension(file.FileName);
+            var fileName = Guid.NewGuid().ToString() + inputFileExt;
+            var wwwRootPath = webHostEnvironment.WebRootPath; 
+            var imagesFolderPath = Path.Combine(wwwRootPath, "images");
+            if (!Directory.Exists(imagesFolderPath))
+            {
+                Directory.CreateDirectory(imagesFolderPath);
+            }
+            var filePath = Path.Combine(imagesFolderPath, fileName);
+            try
+            {
+               await using (var filestream = new FileStream(filePath, FileMode.Create))
+                {
+                    await file.CopyToAsync(filestream);
+                }
+            }
+            catch(Exception ex)
+            {
+                // Handle the exception (e.g., log it)
+                throw new Exception("An error occurred while uploading the file.", ex);
+            }
+            return "/images/" + fileName;
+        }
+    }
+}

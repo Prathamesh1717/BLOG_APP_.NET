@@ -1,0 +1,170 @@
+﻿using BlogApp.Data;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Rendering;
+using BlogApp.Models.ViewModels;
+using Microsoft.Extensions.Logging;
+namespace BlogApp.Controllers
+{
+    public class PostController : Controller
+    {
+        private readonly string[] allowedExt = { ".jpg", ".jpeg", ".png", ".gif" };
+
+        private readonly AppDbContext context;
+
+        // Add this field
+        private readonly IWebHostEnvironment webHostEnvironment;
+
+        private readonly ILogger<PostController> logger;
+
+        public PostController(AppDbContext context, IWebHostEnvironment webHostEnvironment, ILogger<PostController> logger)
+        {
+            this.context = context;
+            this.webHostEnvironment = webHostEnvironment;
+            this.logger = logger;
+        }
+
+        [HttpGet]
+        public IActionResult Create()
+        {
+            var model = new PostViewModel();
+            PopulateCategories(model);
+            return View(model);
+        }
+
+        
+
+        [HttpPost]
+        public async Task<IActionResult> Create(PostViewModel postViewModel)
+        {
+            if (!ModelState.IsValid)
+            {
+                // repopulate categories so the dropdown renders when returning the view
+                PopulateCategories(postViewModel ??= new PostViewModel());
+                return View(postViewModel);
+            }
+
+            // Ensure Post object exists
+            postViewModel.Post ??= new Models.Post();
+
+            // Validate file presence
+            if (postViewModel.FeatureImage == null || postViewModel.FeatureImage.Length == 0)
+            {
+                ModelState.AddModelError("FeatureImage", "Please select an image to upload.");
+                return View(postViewModel);
+            }
+
+            var inputFileext = Path.GetExtension(postViewModel.FeatureImage.FileName).ToLower();
+            bool isAllowed = allowedExt.Contains(inputFileext);
+
+            if (!isAllowed)
+            {
+                ModelState.AddModelError("FeatureImage", "Invalid file type. Only JPG, JPEG, PNG, and GIF files are allowed.");
+                return View(postViewModel);
+            }
+
+            // Upload and save path
+            try
+            {
+                postViewModel.Post.FeatureImagePath = await UploadFileToFolder(postViewModel.FeatureImage);
+                await context.Posts.AddAsync(postViewModel.Post);
+                await context.SaveChangesAsync();
+                return RedirectToAction("Index");
+            }
+            catch (Exception ex)
+            {
+                // Log and show error to the user so we can diagnose why folder/file creation failed
+                logger?.LogError(ex, "Error uploading feature image");
+                ModelState.AddModelError("FeatureImage", "Image upload failed: " + ex.Message);
+                PopulateCategories(postViewModel ??= new PostViewModel());
+                return View(postViewModel);
+            }
+        }
+
+        public IActionResult Index()
+        {
+            return View();
+        }
+        private async Task<string> UploadFileToFolder(IFormFile file)
+        {
+            var inputFileExt = Path.GetExtension(file.FileName);
+            var fileName = Guid.NewGuid().ToString() + inputFileExt;
+            // Ensure we have a valid web root path; prefer WebRootPath, then ContentRootPath, then current directory
+            var wwwRootPath = webHostEnvironment.WebRootPath;
+            if (string.IsNullOrEmpty(wwwRootPath))
+            {
+                var contentRoot = webHostEnvironment.ContentRootPath;
+                if (string.IsNullOrEmpty(contentRoot))
+                {
+                    contentRoot = Directory.GetCurrentDirectory();
+                }
+                wwwRootPath = Path.Combine(contentRoot, "wwwroot");
+            }
+            // Ensure wwwroot exists (some environments / templates may not create it)
+            try
+            {
+                if (!Directory.Exists(wwwRootPath))
+                {
+                    Directory.CreateDirectory(wwwRootPath);
+                    logger?.LogInformation("Created web root folder at {WebRootPath}", wwwRootPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex, "Failed to create web root folder at {WebRootPath}", wwwRootPath);
+                throw;
+            }
+
+            var imagesFolderPath = Path.Combine(wwwRootPath, "images");
+            try
+            {
+                logger?.LogInformation("WebRootPath='{WebRootPath}', imagesFolderPath='{ImagesFolderPath}'", wwwRootPath, imagesFolderPath);
+                // Ensure wwwroot exists (some environments / templates may not create it)
+                var wwwRootDir = Path.GetDirectoryName(wwwRootPath) ?? wwwRootPath;
+                if (!Directory.Exists(wwwRootPath))
+                {
+                    Directory.CreateDirectory(wwwRootPath);
+                    logger?.LogInformation("Created web root folder at {WebRootPath}", wwwRootPath);
+                }
+
+                if (!Directory.Exists(imagesFolderPath))
+                {
+                    Directory.CreateDirectory(imagesFolderPath);
+                    logger?.LogInformation("Created images folder at {ImagesFolderPath}", imagesFolderPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex, "Failed to create web root or images folder at {ImagesFolderPath}", imagesFolderPath);
+                throw;
+            }
+            var filePath = Path.Combine(imagesFolderPath, fileName);
+            try
+            {
+               await using (var filestream = new FileStream(filePath, FileMode.Create))
+                {
+                    await file.CopyToAsync(filestream);
+                }
+            }
+            catch(Exception ex)
+            {
+                logger?.LogError(ex, "Failed to write file to {FilePath}", filePath);
+                throw new Exception("An error occurred while uploading the file.", ex);
+            }
+            return "/images/" + fileName;
+        }
+
+        private void PopulateCategories(PostViewModel model)
+        {
+            // Adjust DbSet name (Categories) and property names (Id, Name) to match your model
+            var categories = context.Categories
+                .Select(c => new SelectListItem
+                {
+                    Value = c.Id.ToString(),
+                    Text = c.Name
+                })
+                .ToList();
+
+            model.Categories = categories;
+        }
+    }
+}
